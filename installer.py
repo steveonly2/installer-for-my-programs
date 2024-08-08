@@ -1,75 +1,170 @@
 import tkinter as tk
-from tkinter import messagebox, filedialog
+from tkinter import messagebox, Toplevel, ttk
 import requests
 import os
+import json
+import subprocess
+import platform
 
-# Define the URLs for the files
-AUTO_PINGER_URL = 'https://github.com/suiyang12/Workout-Helper-V1.0/raw/main/AutoPinger.py'
-REPACKER_URL = 'https://raw.githubusercontent.com/suiyang12/e8372383993/main/repacker.py'
-ROGUI_URL = 'https://raw.githubusercontent.com/suiyang12/e8372383993/main/roguiv2.0.py'
+# URLs
+GITHUB_REPO_URL = "https://raw.githubusercontent.com/suiyang12/installer-for-my-programs/main/versions.json"
+SPEC_READER_URL = "https://raw.githubusercontent.com/suiyang12/e8372383993/main/SpecReader.py"
+LATEST_INSTALLER_URL = "https://raw.githubusercontent.com/suiyang12/installer-for-my-programs/main/installer.py"
 
-def download_file(url, local_path):
-    """Download file from a URL and save it locally."""
+# Fallback script for basic system specs
+FALLBACK_SPECS_SCRIPT = '''
+import platform
+import psutil
+
+def get_basic_specs():
     try:
-        response = requests.get(url)
-        response.raise_for_status()  # Check if the request was successful
-        with open(local_path, 'wb') as file:
-            file.write(response.content)
-        messagebox.showinfo("Success", f"Downloaded {os.path.basename(local_path)} successfully!\nSaved to: {local_path}")
+        cpu = platform.processor()
+        ram = psutil.virtual_memory().total / (1024 ** 3)  # Convert bytes to GB
+        gpu = "N/A"  # GPU detection requires additional libraries or tools
+        return f"CPU: {cpu}\\nRAM: {ram:.2f} GB\\nGPU: {gpu}"
+    except Exception as e:
+        return f"Error retrieving specs: {e}"
+
+if __name__ == "__main__":
+    print(get_basic_specs())
+'''
+
+def is_internet_available():
+    try:
+        response = requests.get("https://www.google.com", timeout=5)
+        return response.status_code == 200
+    except requests.ConnectionError:
+        return False
+
+def get_system_specs():
+    try:
+        response = requests.get(SPEC_READER_URL)
+        spec_reader_script = response.text
+        with open("SpecReader.py", "w") as file:
+            file.write(spec_reader_script)
+        
+        # Execute the script and capture its output
+        result = subprocess.run(['python', 'SpecReader.py'], capture_output=True, text=True)
+        os.remove("SpecReader.py")  # Clean up
+        return result.stdout
+    except requests.RequestException:
+        return get_fallback_specs()
+
+def get_fallback_specs():
+    with open("fallback_specs.py", "w") as file:
+        file.write(FALLBACK_SPECS_SCRIPT)
+    
+    # Execute the fallback script and capture its output
+    result = subprocess.run(['python', 'fallback_specs.py'], capture_output=True, text=True)
+    os.remove("fallback_specs.py")  # Clean up
+    return result.stdout
+
+def get_latest_version_info():
+    try:
+        response = requests.get(GITHUB_REPO_URL)
+        response.raise_for_status()
+        version_info = response.json()
+        return version_info
     except requests.RequestException as e:
-        messagebox.showerror("Error", f"Failed to download file: {e}")
+        print(f"Error fetching version info: {e}")
+        return {}
 
-def on_download_click(url, file_name):
-    """Handle the download button click event."""
-    folder_selected = filedialog.askdirectory(title="Select Folder")
-    if folder_selected:
-        local_path = os.path.join(folder_selected, file_name)
-        download_file(url, local_path)
+def download_file(url, dest_folder, progress_callback=None):
+    if not os.path.exists(dest_folder):
+        os.makedirs(dest_folder)
+    
+    response = requests.get(url, stream=True)
+    file_name = url.split('/')[-1]
+    file_path = os.path.join(dest_folder, file_name)
+    
+    total_size = int(response.headers.get('content-length', 0))
+    downloaded_size = 0
+    
+    with open(file_path, 'wb') as file:
+        for chunk in response.iter_content(chunk_size=8192):
+            file.write(chunk)
+            downloaded_size += len(chunk)
+            if progress_callback:
+                progress_callback(downloaded_size, total_size)
+    
+    return file_path
 
-def show_info(info_text):
-    """Display an information message box."""
-    messagebox.showinfo("Information", info_text)
+def show_info(title, message):
+    messagebox.showinfo(title, message)
+
+def on_download_complete(file_name):
+    specs = get_system_specs()
+    show_info("Download Complete", f"{file_name} downloaded successfully!\n\nSystem Specifications:\n{specs}")
+
+def download_program(url, dest_folder):
+    def update_progress(downloaded_size, total_size):
+        progress = (downloaded_size / total_size) * 100
+        progress_var.set(progress)
+        progress_label.config(text=f"Downloading... {int(progress)}%")
+        root.update_idletasks()
+
+    download_window = Toplevel(root)
+    download_window.title("Downloading")
+    download_window.geometry("300x150")
+    
+    progress_var = tk.DoubleVar()
+    progress_bar = ttk.Progressbar(download_window, variable=progress_var, maximum=100, length=250)
+    progress_bar.pack(pady=20)
+    
+    progress_label = tk.Label(download_window, text="Downloading... 0%")
+    progress_label.pack()
+    
+    file_path = download_file(url, os.getcwd(), update_progress)
+    download_window.destroy()
+    
+    file_name = os.path.basename(file_path)
+    on_download_complete(file_name)
+
+def update_installer_if_needed(current_version):
+    version_info = get_latest_version_info()
+    if version_info:
+        latest_version = version_info.get("latest_version", "")
+        if latest_version != current_version:
+            show_info("Update Available", "A new version of the installer is available. Downloading now...")
+            download_file(LATEST_INSTALLER_URL, os.getcwd())
+            show_info("Update Complete", "The installer has been updated. Please restart the application.")
+            exit()
+
+def show_credits():
+    credits_window = Toplevel(root)
+    credits_window.title("Credits")
+    credits_window.geometry("300x150")
+    
+    tk.Label(credits_window, text="Credits", font=("Arial", 16)).pack(pady=10)
+    tk.Label(credits_window, text="Steveonly", font=("Arial", 12)).pack(pady=10)
+    tk.Button(credits_window, text="Close", command=credits_window.destroy).pack(pady=10)
 
 def create_gui():
-    """Create and display the GUI."""
+    global root
     root = tk.Tk()
-    root.title("Program Installer")
+    root.title("Steve's Installer")
+    root.geometry("600x400")
+    root.resizable(False, False)
 
-    # Create a label
-    label = tk.Label(root, text="Choose a program to download:", font=("Arial", 16))
-    label.pack(pady=20)
+    # Check for internet
+    if not is_internet_available():
+        show_info("Internet Not Found", "Internet Not Found - Switching to Manual.")
+        return
 
-    # Create a button to download AutoPinger
-    download_autopinger_button = tk.Button(root, text="Download AutoPinger.py", font=("Arial", 14),
-                                           command=lambda: on_download_click(AUTO_PINGER_URL, 'AutoPinger.py'))
-    download_autopinger_button.pack(pady=10, side=tk.LEFT, padx=20)
+    # Check for updates
+    current_version = "1.0.0"  # Replace with your current version
+    update_installer_if_needed(current_version)
 
-    # Add a question mark icon next to AutoPinger button using text
-    autopinger_info_button = tk.Button(root, text="❓", font=("Arial", 14), command=lambda: show_info(
-        "AutoPinger.py: A script for ping automation. It allows you to manage pings efficiently."))
-    autopinger_info_button.pack(pady=10, side=tk.LEFT)
+    # Layout
+    tk.Label(root, text="Steve's Installer", font=("Arial", 16)).pack(pady=10)
 
-    # Create a button to download repacker.py
-    download_repacker_button = tk.Button(root, text="Download repacker.py", font=("Arial", 14),
-                                         command=lambda: on_download_click(REPACKER_URL, 'repacker.py'))
-    download_repacker_button.pack(pady=10, side=tk.LEFT, padx=20)
+    tk.Button(root, text="Download Repacker", command=lambda: download_program("https://raw.githubusercontent.com/suiyang12/e8372383993/main/repacker.py", os.getcwd())).pack(side=tk.LEFT, padx=10)
+    tk.Button(root, text="Download RoGui", command=lambda: download_program("https://raw.githubusercontent.com/suiyang12/e8372383993/main/roguiv2.0.py", os.getcwd())).pack(side=tk.LEFT, padx=10)
+    tk.Button(root, text="Download AutoPinger", command=lambda: download_program("https://raw.githubusercontent.com/suiyang12/e8372383993/main/AutoPinger.py", os.getcwd())).pack(side=tk.LEFT, padx=10)
+    
+    tk.Button(root, text="Show Credits", command=show_credits).pack(pady=10)
+    tk.Button(root, text="Go to GitHub", command=lambda: os.startfile("https://github.com/suiyang12")).pack(pady=10)
 
-    # Add a question mark icon next to repacker.py button using text
-    repacker_info_button = tk.Button(root, text="❓", font=("Arial", 14), command=lambda: show_info(
-        "repacker.py: A script for packing and unpacking files. It helps in managing file storage and distribution."))
-    repacker_info_button.pack(pady=10, side=tk.LEFT)
-
-    # Create a button to download roguiv2.0.py
-    download_ro_gui_button = tk.Button(root, text="Download roguiv2.0.py", font=("Arial", 14),
-                                       command=lambda: on_download_click(ROGUI_URL, 'roguiv2.0.py'))
-    download_ro_gui_button.pack(pady=10, side=tk.LEFT, padx=20)
-
-    # Add a question mark icon next to roguiv2.0.py button using text
-    ro_gui_info_button = tk.Button(root, text="❓", font=("Arial", 14), command=lambda: show_info(
-        "roguiv2.0.py: Contains an autoclicker and an AFK mode for Roblox. Useful for automating tasks in Roblox."))
-    ro_gui_info_button.pack(pady=10, side=tk.LEFT)
-
-    # Run the GUI loop
     root.mainloop()
 
 if __name__ == "__main__":
